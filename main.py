@@ -4,6 +4,6 @@ import re
 import datetime
 import os
 
-token = 'testtoken'
+token = ''
 
 bot = telebot.TeleBot(token)
