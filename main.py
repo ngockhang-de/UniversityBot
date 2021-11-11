@@ -1,10 +1,12 @@
+import os
+
 import telebot
 import sqlite3
 import re
 import datetime
 from telebot import types
 from email_validator import validate_email
-import os
+
 
 token = '2014696218:AAH2DXNBSeViA0nm5j6Cx5WC9SbIdUwdAvg'
 
@@ -1163,6 +1165,453 @@ def start_message(message):
             set_state(message, 'del_teacher_submit')
             bot.send_message(message.chat.id, '⚠⚠⚠Вы действительно хотите удалить преподавателя? (Да/Нет) ',
                              reply_markup=markup)
+    elif state == 'add_course_name':
+        text = message.text
+        if text == '-':
+            bot.send_message(message.chat.id, "✅Действие отменено")
+            set_state(message, 'Chill')
+        elif all([re.fullmatch('[A-Za-zА-Яа-яёЁЇїЄєІіҐґ]{1,25}', i) for i in text.split(' ')]) and text != 'Недоступно':
+            id = str(datetime.datetime.now())
+            id = id.split(' ')
+            id = '_'.join(id)
+            execute_query('insert into course(id, name) values (?, ?)', [id, text])
+            set_additional_data(message, id)
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+            for group in execute_query('select name from group_table order by name'):
+                markup.row(group[0])
+            bot.send_message(message.chat.id,
+                             '✅Название курса сохранено!\nℹВыберите группы для добавления в курс или напишите их в чат.\n' +
+                             '⚠Этот шаг обязательный', reply_markup=markup)
+            depart_id = execute_query('select depart_id from user where id = ?', [message.from_user.id])[0][0]
+            execute_query('update course set depart_id = ? where id = ?', [depart_id, get_additional_data(message)[0]])
+            set_state(message, 'add_course_groups')
+        else:
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+            markup.row("-")
+            bot.send_message(message.chat.id, 'Исправьте ошибки в написании курса (запрещённые символы &%$#)\n' +
+                             '✅Пример: Методы оптимизации и исследования операций\n' +
+                             '✅Пример: Дискретная математика\n' +
+                             '⚠Отправьте "-" для отмены.', reply_markup=markup)
+    elif state == 'add_course_groups':
+        text = message.text
+        if text == '+':
+            groups = \
+            execute_query('select count(*) from course_group where course_id = ?', [get_additional_data(message)][0])[
+                0][0]
+            if groups == 0:
+                markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                for group in execute_query('select name from group_table order by name'):
+                    markup.row(group[0])
+                bot.send_message(message.chat.id,
+                                 '❌Вы не добавили ни одной группы. Выберите группу из списка или напишите её в чат.\n' +
+                                 '⚠Этот шаг обязательный', reply_markup=markup)
+            else:
+                markup = types.ReplyKeyboardRemove()
+                bot.send_message(message.chat.id,
+                                 '✅Группы записаны\nℹНапишите количество кредитов для курса (1 число)\n' +
+                                 '✅Правильно: 4\n' +
+                                 '❌Неправильно: аф\n' +
+                                 '⚠Этот шаг обязательный', reply_markup=markup)
+                set_state(message, 'add_course_credits')
+        elif text.upper() in [item[0].upper() for item in execute_query("select name from group_table")]:
+            names = [(item[0], item[1].upper()) for item in execute_query("select id, name from group_table")]
+            group = None
+            for i in names:
+                if i[1] == text.upper():
+                    group = i[0]
+                    break
+            if (group,) not in execute_query('select group_id from course_group where course_id = ?',
+                                             [get_additional_data(message)[0]]):
+                execute_query('insert into course_group(course_id, group_id) values (?, ?)',
+                              [get_additional_data(message)[0], group])
+                markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                markup.row("+")
+                for group in execute_query('select name from group_table order by name'):
+                    markup.row(group[0])
+                bot.send_message(message.chat.id,
+                                 '✅Группа добавлена. \n' +
+                                 'ℹУкажите ещё одну группу или выберите её из списка\n' +
+                                 '⚠Если вы уверены что добавили все группы, отправьте "+"', reply_markup=markup)
+            else:
+                markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                markup.row("+")
+                for group in execute_query('select name from group_table order by name'):
+                    markup.row(group[0])
+                bot.send_message(message.chat.id,
+                                 '❌Группа уже была добавлена. \n' +
+                                 'ℹЕсли хотите добавить другую группу, выберите её из списка или напишите в чат.\n' +
+                                 '⚠Если вы уверены что добавили все группы, отправьте "+"', reply_markup=markup)
+        else:
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+            markup.row("+")
+            for group in execute_query('select name from group_table order by name'):
+                markup.row(group[0])
+            bot.send_message(message.chat.id,
+                             '❌Такой группы не существует. Выберите группу которую хотите добавить в курс из списка ниже или напишите её в чат.\n' +
+                             '⚠Этот шаг обязательный', reply_markup=markup)
+    elif state == 'add_course_credits':
+        text = message.text
+        check = True
+        data = None
+        if len(text.split(' ')) != 1:
+            check = False
+        if check is not False:
+            try:
+                data = int(text)
+            except Exception:
+                data = None
+                check = False
+        if data is not None:
+            check = data >= 0
+        if check and text != 'Недоступно':
+            execute_query('update course set practical_n = ?, labs_n = ?, lections_n = ?, credits = ? where id = ?',
+                          [0, 0, 0, data, get_additional_data(message)[0]])
+            bot.send_message(message.chat.id,
+                             '✅Информация сохранена. Осталось совсем немного! Отправьте описание курса (длинна не более 2000 символов)\n' +
+                             '⚠Этот шаг обязательный')
+            set_state(message, 'add_course_description')
+        else:
+            bot.send_message(message.chat.id,
+                             '⚠Вы допустили ошибку. Введите одно число (кол-во кредитов)\n' +
+                             '✅Правильно:  4\n' +
+                             '❌Неправильно: -18 аф')
+    elif state == 'add_course_description':
+        text = message.text
+        if len(text) > 2000:
+            bot.send_message(message.chat.id,
+                             '❌Описание слишком длинное, опишите курс немного короче (до 2000 символов)')
+        elif text != 'Недоступно':
+            execute_query('update course set description = ? where id = ?', [text, get_additional_data(message)[0]])
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+            markup.row("-")
+            data_set = execute_query(
+                'select name, depart_name, practical_n, lections_n, labs_n, credits, description from course join depart on course.depart_id = depart.id where course.id = ?',
+                [get_additional_data(message)[0]])[0]
+            groups = [item[0] for item in execute_query(
+                'select name from group_table join course_group on group_table.id = course_group.group_id where course_id = ?',
+                [get_additional_data(message)[0]])]
+            del_additional_data(message)
+            bot.send_message(message.chat.id, 'ℹНазвание курса: {}\n' \
+                                              'ℹКафедра которая преподаёт курс: {}\n' \
+                                              'ℹКол-во практических занятий: {}\n' \
+                                              'ℹКол-во лекционных занятий: {}\n' \
+                                              'ℹКол-во лабораторных занятий: {}\n' \
+                                              'ℹКол-во кредитов курса: {}\n'.format(*data_set[:6]) +
+                             'ℹГруппы прикреплённые к курсу: ' + ', '.join(
+                groups) + '\n' + 'ℹОписание курса: {}\n'.format(data_set[6]), reply_markup=markup)
+            bot.send_message(message.chat.id, 'Если хотите добавить ещё один курс, отправьте название\n' +
+                             '✅Пример: Методы оптимизации и исследования операций\n' +
+                             '✅Пример: Дискретная математика\n' +
+                             '⚠Отправьте "-" для отмены.', reply_markup=markup)
+            set_state(message, 'add_course_name')
+        else:
+            bot.send_message(message.chat.id,
+                             '❌Запрещённое описание')
+    elif state == 'watch_course_choise':
+        text = message.text
+        text = text.split(' ')
+        if text[0] == '-':
+            bot.send_message(message.chat.id, "✅Действие отменено")
+            set_state(message, 'Chill')
+        else:
+            try:
+                text[0] = text[0][1:len(text[0]) - 1]
+                if text[0] == execute_query(
+                        'select id from course where id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                        [text[0]])[0][0]:
+                    data = None
+                    data_set = execute_query(
+                        'select name, depart_name, practical_n, lections_n, labs_n, credits, description from course join depart on course.depart_id = depart.id where course.id = ?',
+                        [text[0]])[0]
+                    groups = [item[0] for item in execute_query(
+                        'select name from group_table join course_group on group_table.id = course_group.group_id where course_id = ?',
+                        [text[0]])]
+                    if get_role(message) == 'Admin':
+                        data = execute_query(
+                            'select id, name from course where description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"')
+                        bot.send_message(message.chat.id, 'ℹНазвание курса: {}\n' \
+                                                          'ℹКафедра которая преподаёт курс: {}\n' \
+                                                          'ℹКол-во практических занятий: {}\n' \
+                                                          'ℹКол-во лекционных занятий: {}\n' \
+                                                          'ℹКол-во лабораторных занятий: {}\n' \
+                                                          'ℹКол-во кредитов курса: {}\n'.format(*data_set[:6]) +
+                                         'ℹГруппы прикреплённые к курсу: ' + ', '.join(
+                            groups) + '\n' + 'ℹОписание курса: {}\n'.format(data_set[6]))
+                        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                        markup.row("-")
+                        for id, name in data:
+                            markup.row("({}) {}".format(id, name))
+                        bot.send_message(message.chat.id,
+                                         'Выберите курс, список показан ниже\n' +
+                                         '⚠ Отправьте "-" для отмены.',
+                                         reply_markup=markup)
+                    elif get_role(message) == 'Teacher':
+                        depart = \
+                        execute_query('select depart_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                        data = execute_query(
+                            'select id, name from course where depart_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                            [depart])
+                        if (text[0],) in execute_query('select id from course where depart_id = ?', [depart]):
+                            bot.send_message(message.chat.id, 'ℹНазвание курса: {}\n' \
+                                                              'ℹКафедра которая преподаёт курс: {}\n' \
+                                                              'ℹКол-во практических занятий: {}\n' \
+                                                              'ℹКол-во лекционных занятий: {}\n' \
+                                                              'ℹКол-во лабораторных занятий: {}\n' \
+                                                              'ℹКол-во кредитов курса: {}\n'.format(*data_set[:6]) +
+                                             'ℹГруппы прикреплённые к курсу: ' + ', '.join(
+                                groups) + '\n' + 'ℹОписание курса: {}\n'.format(data_set[6]))
+                        else:
+                            bot.send_message(message.chat.id, '❌Курс создан преподавателем другой кафедры.\n')
+                        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                        markup.row("-")
+                        for id, name in data:
+                            markup.row("({}) {}".format(id, name))
+                        bot.send_message(message.chat.id,
+                                         'Если вы хотите узнать информацию ещё по одному курсу, выберите его из списка.\n' +
+                                         '⚠ Отправьте "-" для отмены.',
+                                         reply_markup=markup)
+
+                    elif get_role(message) == 'Student':
+                        group = execute_query('select group_id from user where id = ?', [int(message.from_user.id)])[0][
+                            0]
+                        data = execute_query(
+                            'select id, name from course join course_group on id = course_id where group_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                            [group])
+                        if (text[0],) in execute_query(
+                                'select id from course join course_group on id = course_id where group_id = ?',
+                                [group]):
+                            bot.send_message(message.chat.id, 'ℹНазвание курса: {}\n' \
+                                                              'ℹКафедра которая преподаёт курс: {}\n' \
+                                                              'ℹКол-во практических занятий: {}\n' \
+                                                              'ℹКол-во лекционных занятий: {}\n' \
+                                                              'ℹКол-во лабораторных занятий: {}\n' \
+                                                              'ℹКол-во кредитов курса: {}\n'.format(*data_set[:6]) +
+                                             'ℹГруппы прикреплённые к курсу: ' + ', '.join(
+                                groups) + '\n' + 'ℹОписание курса: {}\n'.format(data_set[6]))
+                        else:
+                            bot.send_message(message.chat.id, '❌Ваша группа не прикреплена к курсу.\n')
+                        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                        markup.row("-")
+                        for id, name in data:
+                            markup.row("({}) {}".format(id, name))
+                        bot.send_message(message.chat.id,
+                                         'Если вы хотите узнать информацию ещё по одному курсу, выберите его из списка.\n' +
+                                         '⚠ Отправьте "-" для отмены.',
+                                         reply_markup=markup)
+                else:
+                    data = None
+                    if get_role(message) == 'Admin':
+                        data = execute_query(
+                            'select id, name from course where description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"')
+                    elif get_role(message) == 'Teacher':
+                        depart = \
+                            execute_query('select depart_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                        data = execute_query(
+                            'select id, name from course where depart_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                            [depart])
+                    elif get_role(message) == 'Student':
+                        group = execute_query('select group_id from user where id = ?', [int(message.from_user.id)])[0][
+                            0]
+                        print(group)
+                        data = execute_query(
+                            'select id, name from course join course_group on id = course_id where group_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                            [group])
+                    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                    markup.row("-")
+                    for id, name in data:
+                        markup.row("({}) {}".format(id, name))
+                    bot.send_message(message.chat.id, "❌У нас нет такого курса.")
+                    bot.send_message(message.chat.id,
+                                     'Список курсов показан ниже, если вы хотите получить информацию по одному из них, нажмите на него.\n' +
+                                     '⚠ Отправьте "-" для отмены.',
+                                     reply_markup=markup)
+            except Exception as ex:
+                data = None
+                if get_role(message) == 'Admin':
+                    data = execute_query('select id, name from course')
+                elif get_role(message) == 'Teacher':
+                    depart = execute_query('select depart_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                    data = execute_query('select id, name from course where depart_id = ?', [depart])
+                elif get_role(message) == 'Student':
+                    group = execute_query('select group_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                    print(group)
+                    data = execute_query(
+                        'select id, name from course join course_group on id = course_id where group_id = ?', [group])
+                markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                markup.row("-")
+                for id, name in data:
+                    markup.row("({}) {}".format(id, name))
+                bot.send_message(message.chat.id, "❌У нас нет такого курса.")
+                bot.send_message(message.chat.id,
+                                 'Список курсов показан ниже, если вы хотите получить информацию по одному из них, нажмите на него.\n' +
+                                 '⚠ Отправьте "-" для отмены.',
+                                 reply_markup=markup)
+    elif state == 'del_course_choise':
+        text = message.text
+        text = text.split(' ')
+        if text[0] == '-':
+            bot.send_message(message.chat.id, "✅Действие отменено")
+            set_state(message, 'Chill')
+        else:
+            try:
+                text[0] = text[0][1:len(text[0]) - 1]
+                if text[0] == execute_query(
+                        'select id from course where id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                        [text[0]])[0][0]:
+                    data = None
+                    data_set = execute_query(
+                        'select name, depart_name, practical_n, lections_n, labs_n, credits, description from course join depart on course.depart_id = depart.id where course.id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                        [text[0]])[0]
+                    groups = [item[0] for item in execute_query(
+                        'select name from group_table join course_group on group_table.id = course_group.group_id where course_id = ?',
+                        [text[0]])]
+                    if get_role(message) == 'Admin':
+                        data = execute_query('select id, name from course')
+                        bot.send_message(message.chat.id, 'ℹНазвание курса: {}\n' \
+                                                          'ℹКафедра которая преподаёт курс: {}\n' \
+                                                          'ℹКол-во практических занятий: {}\n' \
+                                                          'ℹКол-во лекционных занятий: {}\n' \
+                                                          'ℹКол-во лабораторных занятий: {}\n' \
+                                                          'ℹКол-во кредитов курса: {}\n'.format(*data_set[:6]) +
+                                         'ℹГруппы прикреплённые к курсу: ' + ', '.join(
+                            groups) + '\n' + 'ℹОписание курса: {}\n'.format(data_set[6]))
+                        markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                        markup.row("Да", "Нет")
+                        bot.send_message(message.chat.id, "Вы уверены что хотите удалить курс?", reply_markup=markup)
+                        set_additional_data(message, text[0])
+                        set_state(message, 'del_course_confirm')
+                    elif get_role(message) == 'Teacher':
+                        depart = \
+                            execute_query('select depart_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                        data = [i[0] for i in execute_query(
+                            'select id, name from course where depart_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                            [depart])]
+                        if text[0] in data:
+                            bot.send_message(message.chat.id, 'ℹНазвание курса: {}\n' \
+                                                              'ℹКафедра которая преподаёт курс: {}\n' \
+                                                              'ℹКол-во практических занятий: {}\n' \
+                                                              'ℹКол-во лекционных занятий: {}\n' \
+                                                              'ℹКол-во лабораторных занятий: {}\n' \
+                                                              'ℹКол-во кредитов курса: {}\n'.format(*data_set[:6]) +
+                                             'ℹГруппы прикреплённые к курсу: ' + ', '.join(
+                                groups) + '\n' + 'ℹОписание курса: {}\n'.format(data_set[6]))
+                            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                            markup.row("Да", "Нет")
+                            bot.send_message(message.chat.id, "Вы уверены что хотите удалить курс?",
+                                             reply_markup=markup)
+                            set_additional_data(message, text[0])
+                            set_state(message, 'del_course_confirm')
+                        else:
+                            depart = \
+                            execute_query('select depart_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                            data = execute_query(
+                                'select id, name from course where depart_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                                [depart])
+                            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                            markup.row("-")
+                            for id, name in data:
+                                markup.row("({}) {}".format(id, name))
+                            bot.send_message(message.chat.id,
+                                             '❌Курс создан другой кафедрой, его нельзя удалить. Выберите другой курс.\n' +
+                                             '⚠Отправьте "-" для отмены.',
+                                             reply_markup=markup)
+                else:
+                    data = None
+                    if get_role(message) == 'Admin':
+                        data = execute_query(
+                            'select id, name from course where description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"')
+                    elif get_role(message) == 'Teacher':
+                        depart = \
+                            execute_query('select depart_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                        data = execute_query(
+                            'select id, name from course where depart_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                            [depart])
+                    markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                    markup.row("-")
+                    for id, name in data:
+                        markup.row("({}) {}".format(id, name))
+                    bot.send_message(message.chat.id,
+                                     '❌У нас нет такого курса. Выберите курс который вы хотели бы удалить из списка ниже.\n' +
+                                     '⚠Отправьте "-" для отмены.',
+                                     reply_markup=markup)
+            except Exception as ex:
+                data = None
+                if get_role(message) == 'Admin':
+                    data = execute_query(
+                        'select id, name from course where description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"')
+                elif get_role(message) == 'Teacher':
+                    depart = execute_query('select depart_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                    data = execute_query(
+                        'select id, name from course where depart_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                        [depart])
+                markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+                markup.row("-")
+                for id, name in data:
+                    markup.row("({}) {}".format(id, name))
+                bot.send_message(message.chat.id,
+                                 '❌У нас нет такого курса. Выберите курс который вы хотели бы удалить из списка ниже.\n' +
+                                 '⚠Отправьте "-" для отмены.',
+                                 reply_markup=markup)
+    elif state == 'del_course_confirm':
+        text = message.text
+        if text.upper() == "ДА":
+            id = get_additional_data(message)[0]
+            files = execute_query(
+                'select path from file join lesson on file.lesson_id = lesson.id where lesson.course_id = ?',
+                [get_additional_data(message)[0]])
+            for file in files:
+                os.remove(file[0])
+            execute_query(
+                'delete from file where lesson_id in (select id from lesson where course_id = ?)',
+                [get_additional_data(message)[0]])
+            execute_query('delete from file where lesson_id = ?', [get_additional_data(message)[0]])
+            execute_query('delete from lesson where course_id = ?', [id])
+            execute_query('delete from course where id = ?', [id])
+            execute_query('delete from course_group where course_id = ?', [id])
+            set_state(message, 'del_course_choise')
+            del_additional_data(message)
+            data = None
+            if get_role(message) == 'Admin':
+                data = execute_query(
+                    'select id, name from course where description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"')
+            elif get_role(message) == 'Teacher':
+                depart = execute_query('select depart_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                data = execute_query(
+                    'select id, name from course where depart_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                    [depart])
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+            markup.row("-")
+            for id, name in data:
+                markup.row("({}) {}".format(id, name))
+            bot.send_message(message.chat.id,
+                             '✅Вы выбрали "да", курс удалён, хотите удалить ещё один?\n' +
+                             '⚠Отправьте "-" для отмены.',
+                             reply_markup=markup)
+        elif text.upper() == "НЕТ":
+            set_state(message, 'del_course_choise')
+            del_additional_data(message)
+            data = None
+            if get_role(message) == 'Admin':
+                data = execute_query(
+                    'select id, name from course where description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"')
+            elif get_role(message) == 'Teacher':
+                depart = execute_query('select depart_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                data = execute_query(
+                    'select id, name from course where depart_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                    [depart])
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+            markup.row("-")
+            for id, name in data:
+                markup.row("({}) {}".format(id, name))
+            bot.send_message(message.chat.id,
+                             '✅Вы выбрали "нет", хотите другой курс?\n' +
+                             '⚠Отправьте "-" для отмены.',
+                             reply_markup=markup)
+        else:
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+            markup.row("Да", "Нет")
+            bot.send_message(message.chat.id, '⚠⚠⚠Вы действительно хотите удалить курс? (Да/Нет) ',
+                             reply_markup=markup)
     elif state == "Chill":
         text = message.text
         if text.upper() == "ИНСТРУКЦИЯ":
@@ -1244,6 +1693,59 @@ def start_message(message):
                              'Укажите преподавателя для удаления\n' +
                              '⚠Отправьте "-" для отмены.',
                              reply_markup=markup)
+        elif text.upper() == "ДОБАВИТЬ КУРС" and get_role(message) in ('Admin', 'Teacher'):
+            set_state(message, 'add_course_name')
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+            markup.row("-")
+            bot.send_message(message.chat.id, 'Укажите название курса\n' +
+                             '✅Пример: Методы оптимизации и исследования операций\n' +
+                             '✅Пример: Дискретная математика\n' +
+                             '⚠Отправьте "-" для отмены\n' +
+                             '⚠После написания названия вы должны будете заполнить всю информацию по курсу\n⚠Это действие нельзя отменить!',
+                             reply_markup=markup)
+        elif text.upper() == "КУРСЫ":
+            data = None
+            if get_role(message) == 'Admin':
+                data = execute_query(
+                    'select id, name from course where description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"')
+            elif get_role(message) == 'Teacher':
+                depart = execute_query('select depart_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                data = execute_query(
+                    'select id, name from course where depart_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                    [depart])
+            elif get_role(message) == 'Student':
+                group = execute_query('select group_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                data = execute_query(
+                    'select id, name from course join course_group on id = course_id where group_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                    [group])
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+            markup.row("-")
+            for id, name in data:
+                markup.row("({}) {}".format(id, name))
+            bot.send_message(message.chat.id,
+                             'Выберите курс, список показан ниже\n' +
+                             '⚠Отправьте "-" для отмены.',
+                             reply_markup=markup)
+            set_state(message, 'watch_course_choise')
+        elif text.upper() == "УДАЛИТЬ КУРС" and get_role(message) in ('Admin', 'Teacher'):
+            data = None
+            if get_role(message) == 'Admin':
+                data = execute_query(
+                    'select id, name from course where description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"')
+            elif get_role(message) == 'Teacher':
+                depart = execute_query('select depart_id from user where id = ?', [int(message.from_user.id)])[0][0]
+                data = execute_query(
+                    'select id, name from course where depart_id = ? and description != "Недоступно" and practical_n != "Недоступно" and lections_n != "Недоступно" and credits != "Недоступно" and depart_id != "Недоступно"',
+                    [depart])
+            markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
+            markup.row("-")
+            for id, name in data:
+                markup.row("({}) {}".format(id, name))
+            bot.send_message(message.chat.id,
+                             'Укажите курс\n' +
+                             '⚠Отправьте "-" для отмены.',
+                             reply_markup=markup)
+            set_state(message, 'del_course_choise')
         else:
             markup = types.ReplyKeyboardMarkup(one_time_keyboard=True)
             role = get_role(message)
