@@ -1,3 +1,0 @@
-# UniversityBot
-
-test features
